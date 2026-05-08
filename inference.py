@@ -4,6 +4,7 @@ Usage: python inference.py --image image.png --model model.pt
 """
 
 import argparse
+import json
 import torch
 import cv2
 import numpy as np
@@ -111,6 +112,26 @@ class PosePredictor:
             "translation": translation,
             "quaternion": quaternion,
         }
+
+
+def format_analysis(result: dict, image_path: Path, model_type: str) -> str:
+    """
+    Build a short human-readable analysis summary for a single image.
+    """
+    translation = np.asarray(result["translation"], dtype=np.float32)
+    quaternion = np.asarray(result["quaternion"], dtype=np.float32)
+    translation_norm = float(np.linalg.norm(translation))
+    quaternion_norm = float(np.linalg.norm(quaternion))
+
+    return (
+        f"Image analysis for {image_path.name}\n"
+        f"Model type: {model_type}\n"
+        f"Predicted translation (x, y, z): ({translation[0]:.4f}, {translation[1]:.4f}, {translation[2]:.4f})\n"
+        f"Predicted position magnitude: {translation_norm:.4f} m\n"
+        f"Predicted quaternion (w, x, y, z): ({quaternion[0]:.4f}, {quaternion[1]:.4f}, {quaternion[2]:.4f}, {quaternion[3]:.4f})\n"
+        f"Quaternion norm: {quaternion_norm:.4f}\n"
+        f"Note: this is pose estimation, so the analysis reports the model's predicted satellite pose for the image."
+    )
     
     def predict_batch(self, images: np.ndarray) -> dict:
         """
@@ -156,7 +177,11 @@ class PosePredictor:
 def infer_image(
     image_path: Path,
     model_path: Path,
+    model_type: str = "dtf",
+    backbone: str = "resnet50",
+    device: str = "cuda",
     output_path: Path = None,
+    result_path: Path = None,
     visualize: bool = True,
 ):
     """
@@ -169,7 +194,12 @@ def infer_image(
         return
     
     # Create predictor
-    predictor = PosePredictor(model_path)
+    predictor = PosePredictor(
+        model_path=model_path,
+        model_type=model_type,
+        backbone=backbone,
+        device=device,
+    )
     
     # Predict
     logger.info("Running inference...")
@@ -177,6 +207,24 @@ def infer_image(
     
     logger.info(f"Translation: {result['translation']}")
     logger.info(f"Quaternion: {result['quaternion']}")
+
+    analysis_text = format_analysis(result, image_path, model_type)
+    logger.info("\n" + analysis_text)
+
+    if result_path:
+        result_path = Path(result_path)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "image": str(image_path),
+            "model": str(model_path),
+            "model_type": model_type,
+            "translation": result["translation"].tolist(),
+            "quaternion": result["quaternion"].tolist(),
+            "analysis": analysis_text,
+        }
+        with open(result_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        logger.info(f"Saved analysis JSON: {result_path}")
     
     # Visualize if requested
     if visualize and output_path:
@@ -206,16 +254,33 @@ def main():
         help="Path to model checkpoint"
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        help="Output path for visualization"
-    )
-    parser.add_argument(
         "--model-type",
         type=str,
         default="dtf",
         choices=["dtf", "pnp", "hybrid"],
         help="Type of model"
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        help="Backbone architecture"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device to use (cuda or cpu)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Output path for visualization"
+    )
+    parser.add_argument(
+        "--result-json",
+        type=Path,
+        help="Optional path to save the analysis as JSON"
     )
     parser.add_argument(
         "--no-visualize",
@@ -228,7 +293,11 @@ def main():
     infer_image(
         args.image,
         args.model,
+        model_type=args.model_type,
+        backbone=args.backbone,
+        device=args.device,
         output_path=args.output,
+        result_path=args.result_json,
         visualize=not args.no_visualize,
     )
 
